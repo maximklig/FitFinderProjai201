@@ -12,5 +12,8 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
+# JetBrains IDE (machine-specific)
+.idea/
+
 # macOS
 .DS_Store
