@@ -190,7 +190,57 @@ Final Output
 
 **Milestone 3 — Individual tool implementations:**
 
+For the actual implementation of the three tools I plan to use Claude (Claude Code) since it can read
+my whole repo and not just a snippet I paste in. What I'll give it is each tools spec straight from the
+sections above (the inputs, the return value, and most importantly the failure mode) alongside the
+listings.json and wardrobe_schema.json so it knows the exact field names it has to work with. I'll also
+point it at utils/data_loader.py and tell it to use load_listings() instead of re writing the file loading
+since that is already done for me.
+
+For search_listings I expect it to load the listings, filter by max_price and size first, then score whats
+left by keyword overlap with the description and drop anything that scores 0 so I don't get irrelevant junk,
+then sort highest score first. The way I'll verify it matches my spec is by running it on a couple queries
+before trusting it. "vintage graphic tee" under 50 should give me results, "designer ballgown" size XXS
+under 5 should give me an empty list and NOT throw, and a price filter like under 10 should never return
+something priced above 10. Those are basically my failure modes from the error table so if those pass im happy.
+
+For suggest_outfit and create_fit_card these both call the llm (Groq llama-3.3-70b-versatile with my
+GROQ_API_KEY in conjuction with the .env file) so the thing I care most about is that they don't crash. For
+suggest_outfit the empty wardrobe case has to be handled gracefully, if the user has no items saved it should
+still give general styling advice instead of erroring out. For create_fit_card if the outfit string comes in
+empty it should return an error message string and not raise. I'll verify create_fit_card by running it a few
+times on the SAME input and checking the captions actually come out different, and if they're identical I'll
+bump the temperature up untill there's variance (used a higher temperature for this exact reason). I'll also
+write pytest tests in a tests/ folder, at least one test per failure mode, so I can re run them later and know
+nothing broke.
+
 **Milestone 4 — Planning loop and state management:**
+
+For the planning loop in agent.py I'll hand Claude my Architecture diagram and the Planning Loop / State
+Management sections above so the code it writes follows the same flow I already drew out, not some random
+order. The input to the loop is the natural language query plus the wardrobe dict, and the single source of
+truth for the whole interaction is the session dict from _new_session() (that holds the query, the parsed
+params, the search results, the selected item, the outfit suggestion, the fit_card and an error field).
+
+For the parsing step itself I went with plain regex instead of asking the llm to parse the query. Two reasons,
+it stays deterministic so the same query always parses the same way, and it doesn't burn an api call (or need
+the key at all) just to pull out a price and a size. The regex grabs max_price off phrases like "under $30" or
+a bare "$30", and size off "size M" or a standalone known size token, and whatevers left becomes the
+description that gets fed to search_listings.
+
+The flow I expect it to produce: first parse the query into description / size / max_price and store that in
+session["parsed"], then call search_listings with those params. If search comes back empty I want it to set
+session["error"] to a helpful message and return early, the whole point is it should NOT keep going into
+suggest_outfit with nothing to work with. If there are results it picks the top one as selected_item, feeds
+that plus the wardrobe into suggest_outfit and saves the string, then feeds that outfit string plus the
+selected_item into create_fit_card and saves the caption. State gets passed forward purely through the session
+dict, each tool reads what the last one wrote into it, and the loop knows its done once fit_card is set (or it
+bailed early because of an error).
+
+How I'll verify it matches my spec is by running agent.py directly. The happy path query ("vintage graphic tee
+under 30") should fill in selected_item, outfit_suggestion and fit_card with error staying None, and the
+no results path ("designer ballgown size XXS under 5") should come back with just an error message set and the
+other fields left None. If both of those behave that way then the state is flowing the way I planned it.
 
 ---
 

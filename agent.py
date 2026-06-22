@@ -18,7 +18,53 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+# Known size tokens we'll recognise when they appear on their own (e.g. "size M",
+# or a bare "XXS"). Kept explicit so ordinary words never get mistaken for a size.
+_SIZE_TOKENS = ("XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL")
+
+
+def _parse_query(query: str) -> dict:
+    """
+    Pull a description, size, and max_price out of a natural language query.
+
+    Uses plain regex rather than the LLM so parsing works without an API key and
+    stays deterministic (documented as the chosen approach in planning.md).
+
+    Returns a dict: {"description": str, "size": str | None, "max_price": float | None}
+    """
+    text = query
+    max_price = None
+    size = None
+
+    # Price: "under $30", "below 30", "less than $30", "max 30", or a bare "$30".
+    m = re.search(r"(?:under|below|less than|max|<)\s*\$?\s*(\d+(?:\.\d+)?)", text, re.I)
+    if not m:
+        m = re.search(r"\$\s*(\d+(?:\.\d+)?)", text)
+    if m:
+        max_price = float(m.group(1))
+        text = text[: m.start()] + " " + text[m.end():]
+
+    # Size: prefer an explicit "size X"; otherwise a standalone known size token.
+    sm = re.search(r"\bsize\s+([A-Za-z0-9/]+)", text, re.I)
+    if sm:
+        size = sm.group(1).upper()
+        text = text[: sm.start()] + " " + text[sm.end():]
+    else:
+        # Case-sensitive so lowercase words like "small print" don't trip it.
+        sm = re.search(r"\b(" + "|".join(_SIZE_TOKENS) + r")\b", text)
+        if sm:
+            size = sm.group(1).upper()
+            text = text[: sm.start()] + " " + text[sm.end():]
+
+    description = " ".join(text.split()).strip()
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +138,39 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: fresh session — the single source of truth for this interaction.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into description / size / max_price.
+    session["parsed"] = _parse_query(query)
+    parsed = session["parsed"]
+
+    # Step 3: search listings with the parsed parameters.
+    session["search_results"] = search_listings(
+        parsed["description"], parsed["size"], parsed["max_price"]
+    )
+    if not session["search_results"]:
+        # Branch path: stop here. Do NOT call suggest_outfit with empty input.
+        session["error"] = (
+            "No items found matching your search. Try loosening the size or "
+            "price, or describe the piece a little differently."
+        )
+        return session
+
+    # Step 4: select the top (most relevant) result.
+    session["selected_item"] = session["search_results"][0]
+
+    # Step 5: suggest an outfit from the selected item + wardrobe.
+    session["outfit_suggestion"] = suggest_outfit(
+        session["selected_item"], session["wardrobe"]
+    )
+
+    # Step 6: turn the outfit into a shareable caption.
+    session["fit_card"] = create_fit_card(
+        session["outfit_suggestion"], session["selected_item"]
+    )
+
+    # Step 7: hand back the completed session.
     return session
 
 
